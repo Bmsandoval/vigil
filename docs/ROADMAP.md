@@ -89,8 +89,9 @@ Goal: end-to-end value for Go/npm/Python — offline-capable, low false positive
       safe, KEV, resolve-on-upgrade, withdrawn, severity-change). Live e2e: 7988
       Go advisories, correctly flagged jwt-go v3.2.0+incompatible (high), cobra clean.
 
-> Future polish (not blocking): dedup findings that are CVE aliases of each other
-> (e.g. GHSA + GO-/PYSEC for the same CVE currently both appear).
+> ✅ Alias dedup (Phase 2): findings that are CVE aliases of each other (GHSA +
+> GO-/PYSEC for the same CVE) now collapse into one, keyed by the shared CVE,
+> keeping the stronger advisory and OR-ing KEV exploitation.
 
 ### M4 — Output & state ✅ DONE
 - [x] `internal/report`: markdown generator — grouped by repo, priority-ordered,

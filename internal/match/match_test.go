@@ -121,6 +121,63 @@ func TestEngineKEVAndDiff(t *testing.T) {
 	}
 }
 
+func TestEngineDedupsCVEAliases(t *testing.T) {
+	st := newStore(t)
+	seedRepo(t, st, "app", []inventory.Package{
+		{Ecosystem: "Go", Name: "github.com/x/y", Version: "1.0.0", Direct: true},
+	})
+	// Two advisories for the same package that are CVE aliases of each other:
+	// a GHSA (high, with fix) and a GO- record (no severity). They must collapse
+	// into a single finding, keeping the stronger (GHSA/high).
+	ghsa := advisory("GHSA-aaaa", "Go", "github.com/x/y", "1.0.1", "high", []string{"CVE-2024-9999"})
+	goRec := advisory("GO-2024-0001", "Go", "github.com/x/y", "", "", []string{"CVE-2024-9999"})
+	st.UpsertAdvisory(ghsa)
+	st.UpsertAdvisory(goRec)
+
+	eng := &Engine{Store: st}
+	res, err := eng.Run(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Findings != 1 {
+		t.Fatalf("expected 1 deduped finding, got %d", res.Findings)
+	}
+	views, _ := st.OpenFindings()
+	if len(views) != 1 {
+		t.Fatalf("expected 1 open finding, got %d", len(views))
+	}
+	if views[0].Severity != "high" {
+		t.Errorf("merged finding should keep the stronger (high) severity, got %q", views[0].Severity)
+	}
+	if views[0].FixedVersion != "1.0.1" {
+		t.Errorf("merged finding should carry the recorded fix 1.0.1, got %q", views[0].FixedVersion)
+	}
+}
+
+func TestEngineKEVMergedAcrossAliases(t *testing.T) {
+	st := newStore(t)
+	seedRepo(t, st, "app", []inventory.Package{
+		{Ecosystem: "Go", Name: "github.com/x/y", Version: "1.0.0", Direct: true},
+	})
+	// The GHSA record carries the CVE that's in KEV; the GO- record does not list
+	// it. After merge, the single finding must be flagged exploited.
+	st.UpsertAdvisory(advisory("GHSA-bbbb", "Go", "github.com/x/y", "1.0.1", "high", []string{"CVE-2024-8888"}))
+	st.UpsertAdvisory(advisory("GO-2024-0002", "Go", "github.com/x/y", "1.0.1", "medium", []string{"CVE-2024-8888"}))
+	st.UpsertExploitation("CVE-2024-8888", "2024-05-01", true, "")
+
+	eng := &Engine{Store: st}
+	if _, err := eng.Run(nil); err != nil {
+		t.Fatal(err)
+	}
+	views, _ := st.OpenFindings()
+	if len(views) != 1 {
+		t.Fatalf("expected 1 deduped finding, got %d", len(views))
+	}
+	if !views[0].Exploited {
+		t.Error("merged finding should be exploited (KEV via the shared CVE)")
+	}
+}
+
 func TestEngineWithdrawnAdvisoryIgnored(t *testing.T) {
 	st := newStore(t)
 	seedRepo(t, st, "app", []inventory.Package{

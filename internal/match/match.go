@@ -92,13 +92,17 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 			advCache[key] = advs
 		}
 
+		// Collect candidate findings per instance, collapsing advisories that
+		// are aliases of the same underlying vulnerability (e.g. a GHSA and a
+		// GO-/PYSEC record sharing a CVE) into one finding.
+		candidates := map[string]candidate{}
 		for _, adv := range advs {
-			finding, ok := evaluate(in, adv)
+			finding, vulnKey, ok := evaluate(in, adv)
 			if !ok {
 				continue
 			}
-			exploited, ok := exploitCache[adv.AdvisoryID]
-			if !ok {
+			exploited, seen := exploitCache[adv.AdvisoryID]
+			if !seen {
 				exploited, err = e.Store.IsExploited(adv.AdvisoryID)
 				if err != nil {
 					return res, err
@@ -109,8 +113,16 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 			if exploited {
 				finding.Rationale += " Listed in CISA KEV (actively exploited)."
 			}
+			cand := candidate{finding: finding, adv: adv}
+			if existing, dup := candidates[vulnKey]; dup {
+				candidates[vulnKey] = mergeCandidate(existing, cand)
+			} else {
+				candidates[vulnKey] = cand
+			}
+		}
 
-			delta, err := e.Store.UpsertFinding(scanID, finding)
+		for _, c := range candidates {
+			delta, err := e.Store.UpsertFinding(scanID, c.finding)
 			if err != nil {
 				return res, err
 			}
@@ -121,7 +133,7 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 			if delta.SeverityUp {
 				res.SeverityChanges++
 			}
-			res.Events = append(res.Events, eventsFor(in, adv, finding, delta)...)
+			res.Events = append(res.Events, eventsFor(in, c.adv, c.finding, delta)...)
 		}
 	}
 
@@ -164,11 +176,85 @@ func eventsFor(in store.Instance, adv store.AffectedAdvisory, f store.Finding, d
 	return out
 }
 
+// candidate pairs a finding with the advisory it came from, during per-instance
+// alias deduplication.
+type candidate struct {
+	finding store.Finding
+	adv     store.AffectedAdvisory
+}
+
+// mergeCandidate collapses two alias findings into one, keeping the
+// higher-signal advisory and OR-ing exploitation.
+func mergeCandidate(a, b candidate) candidate {
+	winner, loser := a, b
+	if findingStronger(b.finding, a.finding) {
+		winner, loser = b, a
+	}
+	winner.finding.Exploited = a.finding.Exploited || b.finding.Exploited
+	// Prefer any recorded fix between the two.
+	if winner.finding.FixedVersion == "" && loser.finding.FixedVersion != "" {
+		winner.finding.FixedVersion = loser.finding.FixedVersion
+	}
+	if winner.finding.Exploited && !strings.Contains(winner.finding.Rationale, "KEV") {
+		winner.finding.Rationale += " Listed in CISA KEV (actively exploited)."
+	}
+	return winner
+}
+
+// findingStronger reports whether x should win over y when merging aliases:
+// higher severity, then confirmed confidence, then has-fix.
+func findingStronger(x, y store.Finding) bool {
+	if sx, sy := sevRankInt(x.Severity), sevRankInt(y.Severity); sx != sy {
+		return sx > sy
+	}
+	if cx, cy := confRankInt(x.Confidence), confRankInt(y.Confidence); cx != cy {
+		return cx > cy
+	}
+	return x.FixedVersion != "" && y.FixedVersion == ""
+}
+
+// vulnKey returns the canonical identity for alias dedup: the first CVE alias if
+// present, else the advisory id. Two records sharing a CVE collapse together.
+func vulnKey(adv store.AffectedAdvisory) string {
+	for _, a := range adv.Aliases {
+		if strings.HasPrefix(a, "CVE-") {
+			return a
+		}
+	}
+	return adv.AdvisoryID
+}
+
+func sevRankInt(s string) int {
+	switch s {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func confRankInt(c string) int {
+	switch c {
+	case Confirmed:
+		return 3
+	case Probable:
+		return 2
+	default:
+		return 1
+	}
+}
+
 // evaluate decides whether an advisory affects an instance and, if so, builds
-// the finding. It returns ok=false when the instance is not affected.
-func evaluate(in store.Instance, adv store.AffectedAdvisory) (store.Finding, bool) {
+// the finding plus its canonical vuln key. ok=false means not affected.
+func evaluate(in store.Instance, adv store.AffectedAdvisory) (store.Finding, string, bool) {
 	if adv.Withdrawn {
-		return store.Finding{}, false
+		return store.Finding{}, "", false
 	}
 
 	comp, hasComp := version.For(in.Ecosystem)
@@ -207,7 +293,7 @@ func evaluate(in store.Instance, adv store.AffectedAdvisory) (store.Finding, boo
 	}
 
 	if !matched {
-		return store.Finding{}, false
+		return store.Finding{}, "", false
 	}
 
 	severity := adv.SeverityLabel
@@ -222,8 +308,9 @@ func evaluate(in store.Instance, adv store.AffectedAdvisory) (store.Finding, boo
 		latest = adv.FixedVers[len(adv.FixedVers)-1]
 	}
 
+	key := vulnKey(adv)
 	f := store.Finding{
-		Fingerprint:   fingerprint(in.RepoID, in.Ecosystem, in.PackageName, in.Version, adv.AdvisoryID),
+		Fingerprint:   fingerprint(in.RepoID, in.Ecosystem, in.PackageName, in.Version, key),
 		RepoID:        in.RepoID,
 		InstanceID:    in.InstanceID,
 		AdvisoryID:    adv.AdvisoryID,
@@ -234,7 +321,7 @@ func evaluate(in store.Instance, adv store.AffectedAdvisory) (store.Finding, boo
 		LatestVersion: latest,
 		Rationale:     rationale(in, adv, severity, confidence, minSafe),
 	}
-	return f, true
+	return f, key, true
 }
 
 func rationale(in store.Instance, adv store.AffectedAdvisory, severity, confidence, minSafe string) string {

@@ -41,3 +41,7 @@ by **lockfiles** (exact resolved versions), and every finding carries an orthogo
 Go CLI today, structured so it can graduate into a desktop app without a rewrite.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full engineering design.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

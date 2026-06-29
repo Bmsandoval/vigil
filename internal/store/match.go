@@ -71,6 +71,7 @@ type AffectedAdvisory struct {
 	AffectedVers  []string
 	FixedVers     []string
 	Ranges        []osv.NormRange
+	Aliases       []string // CVE/GHSA cross-references, for alias dedup
 }
 
 // AffectedAdvisoriesFor returns advisories whose affected blocks name the given
@@ -119,9 +120,31 @@ func (s *Store) AffectedAdvisoriesFor(ecosystem, name string) ([]AffectedAdvisor
 			return nil, err
 		}
 		it.adv.Ranges = ranges
+		aliases, err := s.aliasesFor(it.adv.AdvisoryID)
+		if err != nil {
+			return nil, err
+		}
+		it.adv.Aliases = aliases
 		out = append(out, it.adv)
 	}
 	return out, nil
+}
+
+func (s *Store) aliasesFor(advisoryID string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT alias FROM advisory_aliases WHERE advisory_id = ?`, advisoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) rangesFor(affectedID int64) ([]osv.NormRange, error) {
