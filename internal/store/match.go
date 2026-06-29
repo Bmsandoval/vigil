@@ -234,6 +234,7 @@ type Finding struct {
 	FixedVersion  string
 	LatestVersion string
 	Rationale     string
+	Reachability  string // "called" | "imported" | "" (govulncheck, Go only)
 }
 
 // FindingDelta describes how a finding changed relative to its stored value.
@@ -264,17 +265,18 @@ func (s *Store) UpsertFinding(scanID int64, f Finding) (FindingDelta, error) {
 	_, err := s.db.Exec(`
 		INSERT INTO findings(repo_id, package_instance_id, advisory_id, fingerprint,
 			severity, confidence, is_transitive, exploited, fixed_version, latest_version,
-			first_seen_scan, last_seen_scan, status, rationale)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+			first_seen_scan, last_seen_scan, status, rationale, reachability)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET
 			package_instance_id=excluded.package_instance_id,
 			severity=excluded.severity, confidence=excluded.confidence,
 			is_transitive=excluded.is_transitive, exploited=excluded.exploited,
 			fixed_version=excluded.fixed_version, latest_version=excluded.latest_version,
-			last_seen_scan=excluded.last_seen_scan, status='open', rationale=excluded.rationale`,
+			last_seen_scan=excluded.last_seen_scan, status='open', rationale=excluded.rationale,
+			reachability=excluded.reachability`,
 		f.RepoID, f.InstanceID, f.AdvisoryID, f.Fingerprint,
 		f.Severity, f.Confidence, boolToInt(f.IsTransitive), boolToInt(f.Exploited),
-		nullStr(f.FixedVersion), nullStr(f.LatestVersion), scanID, scanID, nullStr(f.Rationale))
+		nullStr(f.FixedVersion), nullStr(f.LatestVersion), scanID, scanID, nullStr(f.Rationale), f.Reachability)
 	if err != nil {
 		return delta, err
 	}
@@ -333,6 +335,7 @@ type FindingView struct {
 	LatestVersion string
 	AdvisoryID    string
 	Rationale     string
+	Reachability  string // "called" | "imported" | ""
 	State         string // "" = active; acknowledged/dismissed/remediating/wont_fix
 	StateNote     string
 }
@@ -349,7 +352,7 @@ func (s *Store) OpenFindings() ([]FindingView, error) {
 		SELECT f.fingerprint, r.name, p.ecosystem, p.name, pi.version,
 		       f.severity, f.confidence, f.is_transitive, f.exploited,
 		       COALESCE(f.fixed_version,''), COALESCE(f.latest_version,''),
-		       f.advisory_id, COALESCE(f.rationale,''),
+		       f.advisory_id, COALESCE(f.rationale,''), COALESCE(f.reachability,''),
 		       COALESCE(st.state,''), COALESCE(st.note,'')
 		FROM findings f
 		JOIN repositories r ON r.id = f.repo_id
@@ -367,7 +370,7 @@ func (s *Store) OpenFindings() ([]FindingView, error) {
 		var transitive, exploited int
 		if err := rows.Scan(&v.Fingerprint, &v.RepoName, &v.Ecosystem, &v.PackageName, &v.Version,
 			&v.Severity, &v.Confidence, &transitive, &exploited,
-			&v.FixedVersion, &v.LatestVersion, &v.AdvisoryID, &v.Rationale,
+			&v.FixedVersion, &v.LatestVersion, &v.AdvisoryID, &v.Rationale, &v.Reachability,
 			&v.State, &v.StateNote); err != nil {
 			return nil, err
 		}

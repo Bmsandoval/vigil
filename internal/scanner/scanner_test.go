@@ -39,7 +39,7 @@ func TestRunInventoriesAndMatches(t *testing.T) {
 	})
 
 	repos := []discover.Repo{{Name: "app", Path: repoPath, Source: "service", MinSeverity: "low"}}
-	res, err := Run(st, repos, nil)
+	res, err := Run(st, repos, nil, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

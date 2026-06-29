@@ -137,7 +137,10 @@ once per finding. **All MVP milestones (M0–M5) complete.**
 - [x] **Cargo** (`Cargo.lock` + `Cargo.toml` direct cross-ref; local workspace
       members excluded). crates.io matching live-verified (smallvec, time).
 - [ ] Remaining ecosystems: Maven/Gradle, Terraform, Composer/Ruby.
-- [ ] **Go reachability** via govulncheck (symbol-level → "Not affected (unreachable)").
+- [x] **Go reachability** via govulncheck: `internal/reachability` (injectable
+      runner, JSON parse, alias propagation) + `findings.reachability` column;
+      findings marked called / imported(unreach), unreachable sinks in priority.
+      Opt-in via `[analysis] reachability` or `scan --reachability`. Live-verified.
 - [ ] NVD CVSS enrichment; native RustSec/PyPA git mirrors for freshness.
 - [ ] SBOM ingestion (CycloneDX/SPDX) + generation (Syft) output.
 - [ ] Container image scanning (shell out to Grype/Trivy).

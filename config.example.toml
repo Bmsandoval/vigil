@@ -27,6 +27,13 @@ enabled = true
 enabled = true
 api_key  = "env:NVD_API_KEY"   # secrets are env refs, never inline
 
+# ── Analysis: optional deeper passes ────────────────────
+[analysis]
+# Run govulncheck on Go repos to mark findings as reachable ("called") vs
+# imported-but-unreachable ("unreach"). Requires govulncheck on PATH. Also
+# available per-scan via `vigil scan --reachability`.
+reachability = false
+
 # ── Services: the on-disk repos to watch ────────────────
 # A "service" is a named local path. Override globals per service.
 [[service]]

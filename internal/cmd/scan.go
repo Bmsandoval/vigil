@@ -9,6 +9,7 @@ import (
 	"github.com/bmsandoval/vigil/internal/config"
 	"github.com/bmsandoval/vigil/internal/discover"
 	"github.com/bmsandoval/vigil/internal/match"
+	reach "github.com/bmsandoval/vigil/internal/reachability"
 	"github.com/bmsandoval/vigil/internal/scanner"
 	"github.com/bmsandoval/vigil/internal/store"
 	"github.com/spf13/cobra"
@@ -18,9 +19,10 @@ import (
 // mirror, reporting findings.
 func newScanCmd() *cobra.Command {
 	var (
-		service string
-		tag     string
-		minSev  string
+		service      string
+		tag          string
+		minSev       string
+		reachability bool
 	)
 	c := &cobra.Command{
 		Use:   "scan",
@@ -53,8 +55,18 @@ func newScanCmd() *cobra.Command {
 			}
 
 			// 2. Inventory + match (shared pipeline).
+			wantReach := reachability || cfg.Analysis.Reachability
+			if wantReach && !reachabilityAvailable() {
+				fmt.Fprintln(cmd.ErrOrStderr(), "  reachability requested but govulncheck not found on PATH — skipping")
+				wantReach = false
+			}
 			res, err := scanner.Run(st, repos, func(repo string, e error) {
 				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %v\n", repo, e)
+			}, scanner.Options{
+				Reachability: wantReach,
+				OnReachError: func(repo string, e error) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "  reachability %s: %v\n", repo, e)
+				},
 			})
 			if err != nil {
 				return err
@@ -92,8 +104,12 @@ func newScanCmd() *cobra.Command {
 	c.Flags().StringVar(&service, "service", "", "scan a single named service")
 	c.Flags().StringVar(&tag, "tag", "", "scan all services with this tag")
 	c.Flags().StringVar(&minSev, "min-severity", "", "only show findings at or above this severity")
+	c.Flags().BoolVar(&reachability, "reachability", false, "run govulncheck on Go repos to mark reachable findings")
 	return c
 }
+
+// reachabilityAvailable reports whether govulncheck is on PATH.
+func reachabilityAvailable() bool { return reach.Available() }
 
 func reportFindings(cmd *cobra.Command, st *store.Store, res match.Result, minSev string) error {
 	all, err := st.OpenFindings()
@@ -127,14 +143,14 @@ func reportFindings(cmd *cobra.Command, st *store.Store, res match.Result, minSe
 	sort.Slice(rows, func(i, j int) bool { return findingLess(rows[i], rows[j]) })
 
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "SEVERITY\tKEV\tREPO\tPACKAGE\tVERSION\tFIX\tADVISORY\tCONF")
+	fmt.Fprintln(tw, "SEVERITY\tKEV\tREACH\tREPO\tPACKAGE\tVERSION\tFIX\tADVISORY\tCONF")
 	for _, r := range rows {
 		kev := ""
 		if r.Exploited {
 			kev = "⚠"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.Severity, kev, r.RepoName, r.PackageName, r.Version,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.Severity, kev, reachLabel(r.Reachability), r.RepoName, r.PackageName, r.Version,
 			orDash(r.FixedVersion), r.AdvisoryID, r.Confidence)
 	}
 	tw.Flush()
@@ -161,10 +177,15 @@ func filterBySeverity(rows []store.FindingView, minSev string) []store.FindingVi
 	return out
 }
 
-// findingLess orders by exploited, then severity, then confidence, then direct.
+// findingLess orders by exploited, then reachability (not-reachable sinks),
+// then severity, then confidence, then direct.
 func findingLess(a, b store.FindingView) bool {
 	if a.Exploited != b.Exploited {
 		return a.Exploited
+	}
+	// A finding known to be unreachable is lower priority than reachable/unknown.
+	if ra, rb := reachPriority(a.Reachability), reachPriority(b.Reachability); ra != rb {
+		return ra > rb
 	}
 	if sa, sb := sevRank(a.Severity), sevRank(b.Severity); sa != sb {
 		return sa > sb
@@ -176,6 +197,30 @@ func findingLess(a, b store.FindingView) bool {
 		return !a.IsTransitive
 	}
 	return a.RepoName < b.RepoName
+}
+
+// reachPriority ranks for display: called highest, unknown middle, imported
+// (not reachable) lowest so it sinks to the bottom.
+func reachPriority(r string) int {
+	switch r {
+	case "called":
+		return 2
+	case "imported":
+		return 0
+	default:
+		return 1
+	}
+}
+
+func reachLabel(r string) string {
+	switch r {
+	case "called":
+		return "called"
+	case "imported":
+		return "unreach"
+	default:
+		return "-"
+	}
 }
 
 func sevRank(s string) int {

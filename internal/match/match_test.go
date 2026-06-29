@@ -2,10 +2,12 @@ package match
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bmsandoval/vigil/internal/inventory"
 	"github.com/bmsandoval/vigil/internal/osv"
+	"github.com/bmsandoval/vigil/internal/reachability"
 	"github.com/bmsandoval/vigil/internal/store"
 )
 
@@ -175,6 +177,40 @@ func TestEngineKEVMergedAcrossAliases(t *testing.T) {
 	}
 	if !views[0].Exploited {
 		t.Error("merged finding should be exploited (KEV via the shared CVE)")
+	}
+}
+
+func TestEngineAnnotatesReachability(t *testing.T) {
+	st := newStore(t)
+	repoID := seedRepo(t, st, "goapp", []inventory.Package{
+		{Ecosystem: "Go", Name: "github.com/reached/pkg", Version: "1.0.0", Direct: true},
+		{Ecosystem: "Go", Name: "github.com/unreached/pkg", Version: "1.0.0", Direct: true},
+	})
+	st.UpsertAdvisory(advisory("GHSA-reached", "Go", "github.com/reached/pkg", "1.0.1", "high", []string{"CVE-2024-1"}))
+	st.UpsertAdvisory(advisory("GHSA-unreached", "Go", "github.com/unreached/pkg", "1.0.1", "high", []string{"CVE-2024-2"}))
+
+	// govulncheck report: CVE-2024-1 called, CVE-2024-2 only imported.
+	rep, _ := reachability.Parse(strings.NewReader(`
+{"osv":{"id":"GO-2024-1","aliases":["CVE-2024-1"]}}
+{"osv":{"id":"GO-2024-2","aliases":["CVE-2024-2"]}}
+{"finding":{"osv":"GO-2024-1","trace":[{"function":"Vuln","package":"github.com/reached/pkg"}]}}
+{"finding":{"osv":"GO-2024-2","trace":[{"package":"github.com/unreached/pkg"}]}}
+`))
+
+	eng := &Engine{Store: st, Reachability: map[int64]*reachability.Report{repoID: rep}}
+	if _, err := eng.Run(nil); err != nil {
+		t.Fatal(err)
+	}
+	views, _ := st.OpenFindings()
+	got := map[string]string{}
+	for _, v := range views {
+		got[v.PackageName] = v.Reachability
+	}
+	if got["github.com/reached/pkg"] != "called" {
+		t.Errorf("reached pkg should be called, got %q", got["github.com/reached/pkg"])
+	}
+	if got["github.com/unreached/pkg"] != "imported" {
+		t.Errorf("unreached pkg should be imported, got %q", got["github.com/unreached/pkg"])
 	}
 }
 

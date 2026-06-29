@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bmsandoval/vigil/internal/reachability"
 	"github.com/bmsandoval/vigil/internal/store"
 	"github.com/bmsandoval/vigil/internal/version"
 )
@@ -25,6 +26,10 @@ const (
 // Engine runs matching against a store.
 type Engine struct {
 	Store *store.Store
+	// Reachability, when set, maps a repo id to a govulncheck report used to
+	// annotate Go findings as called/imported. Repos without an entry are left
+	// unannotated.
+	Reachability map[int64]*reachability.Report
 }
 
 // Event types for notifications.
@@ -113,6 +118,17 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 			if exploited {
 				finding.Rationale += " Listed in CISA KEV (actively exploited)."
 			}
+			if rep := e.Reachability[in.RepoID]; rep != nil && rep.Ran && in.Ecosystem == "Go" {
+				ids := append([]string{adv.AdvisoryID}, adv.Aliases...)
+				switch rep.Lookup(ids...) {
+				case reachability.LevelCalled:
+					finding.Reachability = "called"
+					finding.Rationale += " Reachable: an affected symbol is called (govulncheck)."
+				case reachability.LevelImported:
+					finding.Reachability = "imported"
+					finding.Rationale += " Not reachable: imported but no affected symbol is called (govulncheck)."
+				}
+			}
 			cand := candidate{finding: finding, adv: adv}
 			if existing, dup := candidates[vulnKey]; dup {
 				candidates[vulnKey] = mergeCandidate(existing, cand)
@@ -195,6 +211,10 @@ func mergeCandidate(a, b candidate) candidate {
 	if winner.finding.FixedVersion == "" && loser.finding.FixedVersion != "" {
 		winner.finding.FixedVersion = loser.finding.FixedVersion
 	}
+	// Keep the strongest reachability signal (called > imported > unknown).
+	if reachRank(loser.finding.Reachability) > reachRank(winner.finding.Reachability) {
+		winner.finding.Reachability = loser.finding.Reachability
+	}
 	if winner.finding.Exploited && !strings.Contains(winner.finding.Rationale, "KEV") {
 		winner.finding.Rationale += " Listed in CISA KEV (actively exploited)."
 	}
@@ -247,6 +267,17 @@ func confRankInt(c string) int {
 		return 2
 	default:
 		return 1
+	}
+}
+
+func reachRank(r string) int {
+	switch r {
+	case "called":
+		return 2
+	case "imported":
+		return 1
+	default:
+		return 0
 	}
 }
 

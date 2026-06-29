@@ -45,7 +45,7 @@ func TestOpenMigratesAndIsIdempotent(t *testing.T) {
 	if err := st2.DB().QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Errorf("expected 1 applied migration, got %d", n)
+	if n != 2 {
+		t.Errorf("expected 2 applied migrations, got %d", n)
 	}
 }

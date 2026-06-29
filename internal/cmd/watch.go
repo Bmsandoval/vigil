@@ -117,6 +117,11 @@ func daemonScan(cmd *cobra.Command, st *store.Store, cfg *config.Config) {
 	}
 	res, err := scanner.Run(st, repos, func(repo string, e error) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %v\n", repo, e)
+	}, scanner.Options{
+		Reachability: cfg.Analysis.Reachability && reachabilityAvailable(),
+		OnReachError: func(repo string, e error) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  reachability %s: %v\n", repo, e)
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "  scan: %v\n", err)

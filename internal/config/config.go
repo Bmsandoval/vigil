@@ -22,9 +22,17 @@ type Config struct {
 	Services  []Service  `toml:"service"`
 	Discovers []Discover `toml:"discover"`
 	Notify    Notify     `toml:"notify"`
+	Analysis  Analysis   `toml:"analysis"`
 
 	// path is the file this Config was loaded from (for `service add`).
 	path string
+}
+
+// Analysis configures optional deeper analysis passes.
+type Analysis struct {
+	// Reachability runs govulncheck on Go repos to mark findings called vs
+	// imported-but-unreachable. Requires govulncheck on PATH.
+	Reachability bool `toml:"reachability"`
 }
 
 // Settings holds global defaults.
