@@ -1,0 +1,38 @@
+# Vigil configuration. Vigil reads this file; it never rewrites it wholesale.
+# Runtime state lives in the SQLite DB at settings.db_path.
+# Full reference: https://github.com/bmsandoval/vigil/blob/main/config.example.toml
+
+[settings]
+db_path       = "~/.local/share/vigil/vigil.db"
+refresh_every = "1h"
+scan_every    = "6h"
+offline_ok    = true
+min_severity  = "low"
+
+[sources.osv]
+enabled    = true
+mode       = "bulk"
+ecosystems = ["auto"]   # only ecosystems found in watched repos
+
+[sources.kev]
+enabled = true
+
+[sources.nvd]
+enabled = true
+api_key  = "env:NVD_API_KEY"
+
+# Add repositories to watch with `vigil service add <name> <path>`, or by hand:
+# [[service]]
+# name = "my-api"
+# path = "~/projects/my-api"
+
+[notify.terminal]
+enabled = true
+
+[notify.markdown]
+enabled = true
+out     = "~/.local/share/vigil/reports"
+
+[notify.desktop]
+enabled = true
+only    = ["critical", "exploited"]

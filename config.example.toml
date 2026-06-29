@@ -1,0 +1,82 @@
+# Vigil configuration — human-authored source of truth.
+#
+# Vigil READS this file; it never writes to it. Runtime state (findings,
+# scan history, dismissals, the advisory mirror) lives in the SQLite DB,
+# which is machine-owned — don't hand-edit it.
+#
+# Copy to ~/.config/vigil/config.toml (or run `vigil init`) and edit.
+
+# ── Global ──────────────────────────────────────────────
+[settings]
+db_path       = "~/.local/share/vigil/vigil.db"
+refresh_every = "1h"      # advisory sync cadence (daemon mode)
+scan_every    = "6h"      # or "on-change" for fsnotify-driven scans
+offline_ok    = true
+min_severity  = "low"     # global reporting floor
+
+# ── Sources: which advisory feeds to sync ───────────────
+[sources.osv]
+enabled    = true
+mode       = "bulk"        # bulk | api | hybrid
+ecosystems = ["auto"]      # "auto" = only ecosystems found in watched repos
+
+[sources.kev]
+enabled = true
+
+[sources.nvd]
+enabled = true
+api_key  = "env:NVD_API_KEY"   # secrets are env refs, never inline
+
+# ── Services: the on-disk repos to watch ────────────────
+# A "service" is a named local path. Override globals per service.
+[[service]]
+name         = "my-api"
+path         = "~/projects/my-api"
+ecosystems   = ["Go"]          # restrict, or omit to auto-detect
+min_severity = "medium"
+tags         = ["prod", "backend"]
+
+[[service]]
+name = "web-frontend"
+path = "~/projects/web-frontend"      # auto-detects npm/pnpm
+
+[[service]]
+name    = "worker"
+path    = "~/projects/worker"
+include = ["go.mod", "go.sum"]
+exclude = ["**/testdata/**", "**/vendor/**"]
+notify  = ["slack", "terminal"]
+
+# Or watch a whole tree and auto-enroll repos:
+[[discover]]
+root      = "~/projects"
+max_depth = 3
+exclude   = ["**/node_modules/**", "**/archived/**"]
+default_min_severity = "high"
+
+# ── Notification channels ───────────────────────────────
+[notify.terminal]
+enabled = true
+
+[notify.markdown]
+enabled = true
+out     = "~/.local/share/vigil/reports"
+
+[notify.desktop]
+enabled = true
+only    = ["critical", "exploited"]   # KEV + critical push live
+
+[notify.slack]
+enabled      = false
+webhook_url  = "env:SLACK_WEBHOOK"
+events       = ["newly_exploited", "new_finding"]
+min_severity = "high"
+
+# ── FUTURE (Phase 2) — remote GitHub tracking, not yet implemented ──
+# [[github]]
+# owner   = "your-org"
+# include = ["my-api", "web-*"]
+# exclude = ["*-archived"]
+# auth    = "env:GITHUB_TOKEN"
+# mode    = "manifest"   # manifest | dependency-graph | clone
+# refresh = "12h"

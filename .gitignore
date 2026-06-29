@@ -1,0 +1,19 @@
+/bin/
+/dist/
+.DS_Store
+
+# Local state — never commit (public repo: contains real repo paths + findings)
+config.toml
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets / env — defense in depth (we only ever use env: refs, but be safe)
+.env
+.env.*
+*.local
+*.pem
+*.key
+secrets.*
+credentials.*
+*-credentials.*
