@@ -67,6 +67,7 @@ var registry = []Parser{
 	poetryParser{},
 	requirementsParser{},
 	cargoParser{},
+	composerParser{},
 }
 
 // Scan walks repoRoot, parses every recognized dependency file, and returns the

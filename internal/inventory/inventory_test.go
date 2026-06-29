@@ -281,3 +281,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 		t.Errorf("bad purl: %q", s.Purl)
 	}
 }
+
+func TestComposerParser(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "composer.json", `{
+	  "require": { "php": "^8.2", "laravel/framework": "^11.0", "firebase/php-jwt": "^6.0" },
+	  "require-dev": { "phpunit/phpunit": "^11.0" }
+	}`)
+	write(t, dir, "composer.lock", `{
+	  "_readme": ["ignore"],
+	  "packages": [
+	    { "name": "laravel/framework", "version": "v11.9.2" },
+	    { "name": "firebase/php-jwt", "version": "v6.10.0" },
+	    { "name": "brick/math", "version": "0.12.1" }
+	  ],
+	  "packages-dev": [
+	    { "name": "phpunit/phpunit", "version": "11.2.5" }
+	  ]
+	}`)
+	ms, err := Scan(dir, []string{"Packagist"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock Manifest
+	for _, m := range ms {
+		if m.RelPath == "composer.lock" {
+			lock = m
+		}
+	}
+	idx := byName(lock.Packages)
+	if l := idx["laravel/framework"]; l.Version != "11.9.2" || !l.Direct || l.Ecosystem != "Packagist" { // v stripped
+		t.Errorf("laravel/framework = %+v, want 11.9.2 direct Packagist", l)
+	}
+	if b := idx["brick/math"]; b.Direct { // transitive, not in composer.json
+		t.Errorf("brick/math should be transitive: %+v", b)
+	}
+	if p := idx["phpunit/phpunit"]; !p.Direct { // dev-dep counts as direct
+		t.Errorf("phpunit (dev) should be direct: %+v", p)
+	}
+	if l := idx["laravel/framework"]; l.Purl != "pkg:composer/laravel/framework@v11.9.2" {
+		t.Errorf("bad purl: %q", l.Purl)
+	}
+}
