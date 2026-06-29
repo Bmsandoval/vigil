@@ -150,7 +150,7 @@ transitive, pinned answer — exact, no network, no build.
 | pnpm | `pnpm-lock.yaml` | importers section | richest JS graph |
 | yarn | `yarn.lock` | `package.json` | resolve ranges→pinned |
 | Python | `poetry.lock`/`Pipfile.lock`/`uv.lock`/pinned `requirements.txt` | tool-dependent | unpinned reqs → manifest mode |
-| Cargo | `Cargo.lock` | `Cargo.toml` | clean SemVer; RustSec quality high |
+| Cargo ✅ | `Cargo.lock` | `Cargo.toml` cross-ref | clean SemVer; RustSec quality high; local members excluded |
 | Maven | `pom.xml` + `mvn dependency:tree` | mgmt vs transitive | pom-only = manifest mode |
 | Gradle | `gradle.lockfile` | `build.gradle` | else `gradle dependencies` (opt-in build) |
 | Docker | Dockerfile base tags; later image SBOM | n/a | real scan = image layers (Phase 2) |

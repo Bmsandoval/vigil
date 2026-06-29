@@ -134,7 +134,9 @@ once per finding. **All MVP milestones (M0–M5) complete.**
 
 ## Phase 2
 
-- [ ] Remaining ecosystems: Cargo, Maven/Gradle, Terraform, Composer/Ruby.
+- [x] **Cargo** (`Cargo.lock` + `Cargo.toml` direct cross-ref; local workspace
+      members excluded). crates.io matching live-verified (smallvec, time).
+- [ ] Remaining ecosystems: Maven/Gradle, Terraform, Composer/Ruby.
 - [ ] **Go reachability** via govulncheck (symbol-level → "Not affected (unreachable)").
 - [ ] NVD CVSS enrichment; native RustSec/PyPA git mirrors for freshness.
 - [ ] SBOM ingestion (CycloneDX/SPDX) + generation (Syft) output.

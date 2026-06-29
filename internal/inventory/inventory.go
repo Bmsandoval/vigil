@@ -66,6 +66,7 @@ var registry = []Parser{
 	pnpmParser{},
 	poetryParser{},
 	requirementsParser{},
+	cargoParser{},
 }
 
 // Scan walks repoRoot, parses every recognized dependency file, and returns the
@@ -128,6 +129,7 @@ var defaultSkipDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true,
 	".venv": true, "venv": true, "__pycache__": true,
 	"testdata": true, ".terraform": true, "dist": true, "build": true,
+	"target": true, // Rust/Java build output
 }
 
 func shouldSkipDir(rel, name string, excludes []string) bool {

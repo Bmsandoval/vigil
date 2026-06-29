@@ -219,3 +219,65 @@ func TestNormalizePyPI(t *testing.T) {
 		}
 	}
 }
+
+func TestCargoParser(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "Cargo.toml", `[package]
+name = "myapp"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+
+[dev-dependencies]
+mockito = "1.2"
+`)
+	write(t, dir, "Cargo.lock", `version = 3
+
+[[package]]
+name = "myapp"
+version = "0.1.0"
+
+[[package]]
+name = "serde"
+version = "1.0.190"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde_derive"
+version = "1.0.190"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "mockito"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`)
+	ms, err := Scan(dir, []string{"crates.io"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock Manifest
+	for _, m := range ms {
+		if m.RelPath == "Cargo.lock" {
+			lock = m
+		}
+	}
+	idx := byName(lock.Packages)
+	// Local workspace member "myapp" (no source) must be excluded.
+	if _, ok := idx["myapp"]; ok {
+		t.Error("local crate myapp should not be inventoried")
+	}
+	if s := idx["serde"]; s.Version != "1.0.190" || !s.Direct || s.Ecosystem != "crates.io" {
+		t.Errorf("serde = %+v, want 1.0.190 direct crates.io", s)
+	}
+	if d := idx["serde_derive"]; d.Direct {
+		t.Errorf("serde_derive should be transitive: %+v", d)
+	}
+	if m := idx["mockito"]; !m.Direct { // dev-dependency counts as direct
+		t.Errorf("mockito (dev-dep) should be direct: %+v", m)
+	}
+	if s := idx["serde"]; s.Purl != "pkg:cargo/serde@1.0.190" {
+		t.Errorf("bad purl: %q", s.Purl)
+	}
+}
