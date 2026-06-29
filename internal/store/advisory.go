@@ -8,14 +8,59 @@ import (
 	"github.com/bmsandoval/vigil/internal/osv"
 )
 
-// UpsertAdvisory writes an advisory and its aliases, affected blocks, ranges,
-// and references. It returns changed=true when the advisory is new or its
-// content hash differs from what is stored (a revised advisory), so callers can
-// detect severity/fix changes. Unchanged advisories are skipped cheaply.
+// UpsertAdvisory writes a single advisory (in its own transaction). It returns
+// changed=true when the advisory is new or its content hash differs from what is
+// stored. For bulk ingest use UpsertAdvisories, which batches many per
+// transaction and is dramatically faster.
 func (s *Store) UpsertAdvisory(adv osv.Advisory) (changed bool, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	changed, err = upsertAdvisoryTx(tx, adv)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return changed, nil
+}
+
+// UpsertAdvisories writes a batch of advisories in a single transaction —
+// avoiding a per-advisory fsync, which is the bottleneck when ingesting the
+// tens of thousands of records in a feed like npm. Returns how many were new or
+// revised.
+func (s *Store) UpsertAdvisories(advs []osv.Advisory) (changed int, err error) {
+	if len(advs) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, adv := range advs {
+		ch, err := upsertAdvisoryTx(tx, adv)
+		if err != nil {
+			return changed, err
+		}
+		if ch {
+			changed++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return changed, err
+	}
+	return changed, nil
+}
+
+// upsertAdvisoryTx writes one advisory and its child rows within an existing
+// transaction. Unchanged advisories (same content hash) are skipped cheaply.
+func upsertAdvisoryTx(tx *sql.Tx, adv osv.Advisory) (changed bool, err error) {
 	var existing string
-	row := s.db.QueryRow(`SELECT content_hash FROM advisories WHERE id = ?`, adv.ID)
-	switch err := row.Scan(&existing); err {
+	switch err := tx.QueryRow(`SELECT content_hash FROM advisories WHERE id = ?`, adv.ID).Scan(&existing); err {
 	case nil:
 		if existing == adv.ContentHash {
 			return false, nil
@@ -24,12 +69,6 @@ func (s *Store) UpsertAdvisory(adv osv.Advisory) (changed bool, err error) {
 	default:
 		return false, err
 	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
 
 	if _, err := tx.Exec(`
 		INSERT INTO advisories(id, source, summary, details, severity_label,
@@ -102,22 +141,43 @@ func (s *Store) UpsertAdvisory(adv osv.Advisory) (changed bool, err error) {
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := bumpMirrorRevision(tx); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// UpsertExploitation records a CISA KEV entry (CVE-keyed).
+// UpsertExploitation records a CISA KEV entry (CVE-keyed). It bumps the mirror
+// revision only when the entry actually changes, so an unchanged KEV re-sync
+// doesn't needlessly invalidate the match-skip cache.
 func (s *Store) UpsertExploitation(cve, dateAdded string, ransomware bool, dueDate string) error {
-	_, err := s.db.Exec(`
+	var curDate, curDue string
+	var curRansom int
+	err := s.db.QueryRow(
+		`SELECT COALESCE(kev_date_added,''), COALESCE(due_date,''), ransomware FROM exploitation WHERE cve = ?`,
+		cve).Scan(&curDate, &curDue, &curRansom)
+	unchanged := err == nil && curDate == dateAdded && curDue == dueDate && curRansom == boolToInt(ransomware)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
 		INSERT INTO exploitation(cve, in_kev, kev_date_added, ransomware, due_date)
 		VALUES(?, 1, ?, ?, ?)
 		ON CONFLICT(cve) DO UPDATE SET
 			in_kev=1, kev_date_added=excluded.kev_date_added,
 			ransomware=excluded.ransomware, due_date=excluded.due_date`,
-		cve, nullStr(dateAdded), boolToInt(ransomware), nullStr(dueDate))
-	return err
+		cve, nullStr(dateAdded), boolToInt(ransomware), nullStr(dueDate)); err != nil {
+		return err
+	}
+	if !unchanged {
+		if err := bumpMirrorRevision(tx); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // GetCursor returns the stored cursor (ETag/timestamp) for a source key.

@@ -72,6 +72,58 @@ func TestUpsertAdvisoryChangeDetection(t *testing.T) {
 	}
 }
 
+func TestUpsertAdvisoriesBatch(t *testing.T) {
+	st := newTestStore(t)
+	batch := []osv.Advisory{
+		sampleAdvisory("h1", "high"),
+		{ID: "GHSA-two", Source: "ghsa", ContentHash: "x", SeverityLabel: "low",
+			Affected: []osv.NormAffected{{Ecosystem: "npm", PackageName: "left-pad"}}},
+	}
+	changed, err := st.UpsertAdvisories(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 2 {
+		t.Errorf("batch: expected 2 changed, got %d", changed)
+	}
+	if n, _ := st.CountAdvisories(); n != 2 {
+		t.Errorf("expected 2 advisories stored, got %d", n)
+	}
+	// Re-running the same batch → 0 changed (content-hash dedup within batch path).
+	changed, _ = st.UpsertAdvisories(batch)
+	if changed != 0 {
+		t.Errorf("re-running identical batch should report 0 changed, got %d", changed)
+	}
+}
+
+func TestMirrorRevisionBumpsOnChange(t *testing.T) {
+	st := newTestStore(t)
+	v0, _ := st.AdvisoryDBVersion()
+
+	st.UpsertAdvisory(sampleAdvisory("h1", "high"))
+	v1, _ := st.AdvisoryDBVersion()
+	if v1 == v0 {
+		t.Error("advisory insert should bump mirror revision")
+	}
+	// Unchanged re-upsert → no bump.
+	st.UpsertAdvisory(sampleAdvisory("h1", "high"))
+	v2, _ := st.AdvisoryDBVersion()
+	if v2 != v1 {
+		t.Errorf("unchanged advisory should not bump revision: %q -> %q", v1, v2)
+	}
+	// KEV insert → bump; unchanged KEV re-sync → no bump.
+	st.UpsertExploitation("CVE-1", "2024-01-01", false, "")
+	v3, _ := st.AdvisoryDBVersion()
+	if v3 == v2 {
+		t.Error("KEV insert should bump revision")
+	}
+	st.UpsertExploitation("CVE-1", "2024-01-01", false, "")
+	v4, _ := st.AdvisoryDBVersion()
+	if v4 != v3 {
+		t.Errorf("unchanged KEV re-sync should not bump revision: %q -> %q", v3, v4)
+	}
+}
+
 func TestUpsertExploitationAndCursor(t *testing.T) {
 	st := newTestStore(t)
 	if err := st.UpsertExploitation("CVE-2024-1111", "2024-03-01", true, "2024-03-21"); err != nil {

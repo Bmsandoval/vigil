@@ -214,6 +214,89 @@ func TestEngineAnnotatesReachability(t *testing.T) {
 	}
 }
 
+func TestEngineFilteredScanDoesNotResolveOtherRepos(t *testing.T) {
+	st := newStore(t)
+	repoA := seedRepo(t, st, "appA", []inventory.Package{
+		{Ecosystem: "npm", Name: "lodash", Version: "4.17.20", Direct: true},
+	})
+	repoB := seedRepo(t, st, "appB", []inventory.Package{
+		{Ecosystem: "npm", Name: "express", Version: "4.0.0", Direct: true},
+	})
+	st.UpsertAdvisory(advisory("GHSA-lodash", "npm", "lodash", "4.17.21", "high", nil))
+	st.UpsertAdvisory(advisory("GHSA-express", "npm", "express", "5.0.0", "high", nil))
+
+	eng := &Engine{Store: st}
+	if _, err := eng.Run(nil); err != nil { // full scan: both repos get a finding
+		t.Fatal(err)
+	}
+	if v, _ := st.OpenFindings(); len(v) != 2 {
+		t.Fatalf("expected 2 findings after full scan, got %d", len(v))
+	}
+
+	// Scan ONLY repoA. repoB's finding must NOT be resolved.
+	res, err := eng.Run([]int64{repoA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Resolved != 0 {
+		t.Errorf("filtered scan of appA resolved %d findings — should be 0 (must not touch appB)", res.Resolved)
+	}
+	open := map[string]bool{}
+	views, _ := st.OpenFindings()
+	for _, v := range views {
+		open[v.RepoName] = true
+	}
+	if !open["appA"] || !open["appB"] {
+		t.Errorf("both repos should still have open findings, got %v", open)
+	}
+	_ = repoB
+}
+
+func TestEngineMatchSkipOnUnchangedRescan(t *testing.T) {
+	st := newStore(t)
+	seedRepo(t, st, "app", []inventory.Package{
+		{Ecosystem: "npm", Name: "lodash", Version: "4.17.20", Direct: true},
+	})
+	st.UpsertAdvisory(advisory("GHSA-lodash", "npm", "lodash", "4.17.21", "high", nil))
+
+	eng := &Engine{Store: st}
+	r1, err := eng.Run(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.ManifestsSkipped != 0 || r1.Findings != 1 {
+		t.Fatalf("first scan: skipped=%d findings=%d, want 0/1", r1.ManifestsSkipped, r1.Findings)
+	}
+
+	// Re-scan with nothing changed (no refresh, no lockfile change): the manifest
+	// should be skipped, the finding preserved, nothing resolved.
+	r2, err := eng.Run(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.ManifestsSkipped != 1 {
+		t.Errorf("second scan should skip 1 manifest, got %d", r2.ManifestsSkipped)
+	}
+	if r2.Resolved != 0 {
+		t.Errorf("skip must not resolve findings, got %d resolved", r2.Resolved)
+	}
+	if v, _ := st.OpenFindings(); len(v) != 1 {
+		t.Errorf("finding should be preserved across a skipped scan, got %d", len(v))
+	}
+
+	// After an advisory change, the skip must NOT happen (re-match).
+	bumped := advisory("GHSA-lodash", "npm", "lodash", "4.17.21", "critical", nil)
+	bumped.ContentHash = "v2"
+	st.UpsertAdvisory(bumped)
+	r3, _ := eng.Run(nil)
+	if r3.ManifestsSkipped != 0 {
+		t.Errorf("advisory change should invalidate skip, got %d skipped", r3.ManifestsSkipped)
+	}
+	if r3.SeverityChanges != 1 {
+		t.Errorf("severity bump should be detected after re-match, got %d", r3.SeverityChanges)
+	}
+}
+
 func TestEngineWithdrawnAdvisoryIgnored(t *testing.T) {
 	st := newStore(t)
 	seedRepo(t, st, "app", []inventory.Package{

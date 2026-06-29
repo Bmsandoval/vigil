@@ -60,7 +60,8 @@ func (s *Store) SaveManifest(repoID int64, m inventory.Manifest) (changed bool, 
 			ecosystem = excluded.ecosystem,
 			kind = excluded.kind,
 			content_hash = excluded.content_hash,
-			parsed_at = excluded.parsed_at`,
+			parsed_at = excluded.parsed_at,
+			last_matched_db_version = ''`, // content changed → force re-match
 		repoID, m.Ecosystem, m.RelPath, string(m.Kind), m.ContentHash, now)
 	if err != nil {
 		return false, err

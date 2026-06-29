@@ -136,6 +136,9 @@ func reportFindings(cmd *cobra.Command, st *store.Store, res match.Result, minSe
 		if suppressed > 0 {
 			cmd.Printf(" (%d dismissed)", suppressed)
 		}
+		if res.ManifestsSkipped > 0 {
+			cmd.Printf(" [%d manifest(s) unchanged, skipped]", res.ManifestsSkipped)
+		}
 		cmd.Println(".")
 		return nil
 	}
@@ -162,6 +165,9 @@ func reportFindings(cmd *cobra.Command, st *store.Store, res match.Result, minSe
 	}
 	if suppressed > 0 {
 		cmd.Printf(" (%d dismissed, hidden)", suppressed)
+	}
+	if res.ManifestsSkipped > 0 {
+		cmd.Printf(" [%d manifest(s) unchanged, skipped]", res.ManifestsSkipped)
 	}
 	cmd.Println(".")
 	return nil

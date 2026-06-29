@@ -63,6 +63,23 @@ func (r *Refresher) syncOSVEcosystem(ecosystem string) EcoResult {
 		return res
 	}
 
+	// Accumulate advisories and flush in batches — a single transaction per
+	// batch is far faster than one per advisory for large feeds (npm is ~80k).
+	const batchSize = 500
+	batch := make([]osv.Advisory, 0, batchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		changed, err := r.Store.UpsertAdvisories(batch)
+		if err != nil {
+			return err
+		}
+		res.Changed += changed
+		batch = batch[:0]
+		return nil
+	}
+
 	for _, f := range zr.File {
 		if !strings.HasSuffix(f.Name, ".json") {
 			continue
@@ -75,16 +92,18 @@ func (r *Refresher) syncOSVEcosystem(ecosystem string) EcoResult {
 		if err != nil || rec.ID == "" {
 			continue
 		}
-		adv := rec.Normalize(data)
-		changed, err := r.Store.UpsertAdvisory(adv)
-		if err != nil {
-			res.Err = fmt.Errorf("osv %s: upsert %s: %w", ecosystem, rec.ID, err)
-			return res
-		}
+		batch = append(batch, rec.Normalize(data))
 		res.Total++
-		if changed {
-			res.Changed++
+		if len(batch) >= batchSize {
+			if err := flush(); err != nil {
+				res.Err = fmt.Errorf("osv %s: upsert batch: %w", ecosystem, err)
+				return res
+			}
 		}
+	}
+	if err := flush(); err != nil {
+		res.Err = fmt.Errorf("osv %s: upsert batch: %w", ecosystem, err)
+		return res
 	}
 
 	// Persist the new ETag only after a fully successful ingest.

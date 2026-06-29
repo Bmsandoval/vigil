@@ -11,16 +11,18 @@ import (
 // Instance is a resolved package present in a repo, joined with the context the
 // matcher needs.
 type Instance struct {
-	InstanceID   int64
-	RepoID       int64
-	RepoName     string
-	RepoMinSev   string
-	Ecosystem    string
-	PackageName  string
-	Version      string
-	IsDirect     bool
-	Locator      string
-	ManifestKind string
+	InstanceID          int64
+	RepoID              int64
+	RepoName            string
+	RepoMinSev          string
+	Ecosystem           string
+	PackageName         string
+	Version             string
+	IsDirect            bool
+	Locator             string
+	ManifestKind        string
+	ManifestID          int64
+	ManifestLastMatched string // advisory-DB version this manifest was last matched at
 }
 
 // AllInstances returns every package instance in enabled repos, optionally
@@ -28,7 +30,8 @@ type Instance struct {
 func (s *Store) AllInstances(repoIDs []int64) ([]Instance, error) {
 	q := `
 		SELECT pi.id, r.id, r.name, COALESCE(r.min_severity,''), p.ecosystem, p.name,
-		       pi.version, pi.is_direct, COALESCE(pi.source_locator,''), m.kind
+		       pi.version, pi.is_direct, COALESCE(pi.source_locator,''), m.kind,
+		       m.id, COALESCE(m.last_matched_db_version,'')
 		FROM package_instances pi
 		JOIN manifests m ON m.id = pi.manifest_id
 		JOIN repositories r ON r.id = m.repo_id
@@ -49,7 +52,8 @@ func (s *Store) AllInstances(repoIDs []int64) ([]Instance, error) {
 		var in Instance
 		var direct int
 		if err := rows.Scan(&in.InstanceID, &in.RepoID, &in.RepoName, &in.RepoMinSev,
-			&in.Ecosystem, &in.PackageName, &in.Version, &direct, &in.Locator, &in.ManifestKind); err != nil {
+			&in.Ecosystem, &in.PackageName, &in.Version, &direct, &in.Locator, &in.ManifestKind,
+			&in.ManifestID, &in.ManifestLastMatched); err != nil {
 			return nil, err
 		}
 		in.IsDirect = direct == 1
@@ -202,6 +206,45 @@ func (s *Store) FixLinks(advisoryID string) ([]string, error) {
 
 // ── Scans & findings ────────────────────────────────────────────────────────
 
+// AdvisoryDBVersion returns the monotonic mirror-revision counter, which is
+// bumped whenever an advisory or KEV entry actually changes. A manifest matched
+// at revision N can be safely skipped on a later scan while the value is still N.
+func (s *Store) AdvisoryDBVersion() (string, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'mirror_revision'`).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "0", nil
+	}
+	return v, err
+}
+
+// bumpMirrorRevision increments the mirror-revision counter within tx.
+func bumpMirrorRevision(tx *sql.Tx) error {
+	_, err := tx.Exec(`UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'mirror_revision'`)
+	return err
+}
+
+// TouchManifestFindings bumps last_seen_scan for the open findings of a manifest
+// whose matching was skipped, so ResolveStale does not close them. Returns the
+// number of findings kept alive.
+func (s *Store) TouchManifestFindings(manifestID, scanID int64) (int, error) {
+	res, err := s.db.Exec(`
+		UPDATE findings SET last_seen_scan = ?
+		WHERE status='open' AND package_instance_id IN (
+			SELECT id FROM package_instances WHERE manifest_id = ?)`, scanID, manifestID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// SetManifestMatched records the advisory-DB version a manifest was matched at.
+func (s *Store) SetManifestMatched(manifestID int64, dbVersion string) error {
+	_, err := s.db.Exec(`UPDATE manifests SET last_matched_db_version = ? WHERE id = ?`, dbVersion, manifestID)
+	return err
+}
+
 // CreateScan opens a new scan row and returns its id.
 func (s *Store) CreateScan() (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -308,15 +351,40 @@ func (s *Store) RecordNotification(fingerprint, channel, eventType string) error
 }
 
 // ResolveStale marks open findings not seen in the given scan as resolved, and
-// returns how many were closed.
-func (s *Store) ResolveStale(scanID int64) (int, error) {
-	res, err := s.db.Exec(
-		`UPDATE findings SET status='resolved' WHERE status='open' AND last_seen_scan < ?`, scanID)
+// returns how many were closed. When repoIDs is non-empty the resolution is
+// scoped to those repositories — essential for filtered scans (--service/--tag)
+// so scanning one repo does not resolve findings belonging to others. An empty
+// repoIDs means a full scan and resolves across all repositories.
+func (s *Store) ResolveStale(scanID int64, repoIDs []int64) (int, error) {
+	query := `UPDATE findings SET status='resolved' WHERE status='open' AND last_seen_scan < ?`
+	args := []any{scanID}
+	if len(repoIDs) > 0 {
+		query += ` AND repo_id IN (` + placeholders(len(repoIDs)) + `)`
+		for _, id := range repoIDs {
+			args = append(args, id)
+		}
+	}
+	res, err := s.db.Exec(query, args...)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// placeholders returns "?, ?, ..." with n entries for an IN clause.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, n*3)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',', ' ')
+		}
+		b = append(b, '?')
+	}
+	return string(b)
 }
 
 // FindingView is an open finding joined with display context and any user

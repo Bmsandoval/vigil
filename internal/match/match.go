@@ -54,13 +54,14 @@ type Event struct {
 
 // Result summarizes a matching run.
 type Result struct {
-	ScanID          int64
-	RepoCount       int
-	Findings        int
-	New             int
-	Resolved        int
-	SeverityChanges int
-	Events          []Event
+	ScanID           int64
+	RepoCount        int
+	Findings         int
+	New              int
+	Resolved         int
+	SeverityChanges  int
+	ManifestsSkipped int // manifests skipped via the (content, db-version) cache
+	Events           []Event
 }
 
 // Run matches the current inventory against the advisory mirror, persists
@@ -80,19 +81,74 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 		return res, err
 	}
 
+	dbVersion, err := e.Store.AdvisoryDBVersion()
+	if err != nil {
+		return res, err
+	}
+
+	// Group instances by manifest so an unchanged manifest already matched at the
+	// current advisory-DB version can be skipped wholesale.
 	repos := map[int64]bool{}
+	byManifest := map[int64][]store.Instance{}
+	var manifestOrder []int64
+	manifestVersion := map[int64]string{}
+	for _, in := range instances {
+		repos[in.RepoID] = true
+		if _, seen := byManifest[in.ManifestID]; !seen {
+			manifestOrder = append(manifestOrder, in.ManifestID)
+		}
+		byManifest[in.ManifestID] = append(byManifest[in.ManifestID], in)
+		manifestVersion[in.ManifestID] = in.ManifestLastMatched
+	}
+
 	advCache := map[string][]store.AffectedAdvisory{}
 	exploitCache := map[string]bool{}
 
-	for _, in := range instances {
-		repos[in.RepoID] = true
+	for _, manifestID := range manifestOrder {
+		// Skip: manifest already matched at this exact advisory-DB version and its
+		// content is unchanged (content changes clear last_matched_db_version).
+		if dbVersion != "" && manifestVersion[manifestID] == dbVersion {
+			kept, err := e.Store.TouchManifestFindings(manifestID, scanID)
+			if err != nil {
+				return res, err
+			}
+			res.Findings += kept
+			res.ManifestsSkipped++
+			continue
+		}
 
+		if err := e.matchManifest(scanID, byManifest[manifestID], advCache, exploitCache, &res); err != nil {
+			return res, err
+		}
+		if err := e.Store.SetManifestMatched(manifestID, dbVersion); err != nil {
+			return res, err
+		}
+	}
+
+	// Scope resolution to the repos actually scanned (repoIDs); a nil repoIDs is
+	// a full scan and resolves globally.
+	resolved, err := e.Store.ResolveStale(scanID, repoIDs)
+	if err != nil {
+		return res, err
+	}
+	res.Resolved = resolved
+	res.RepoCount = len(repos)
+	if err := e.Store.FinishScan(scanID, res.RepoCount, res.Findings); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// matchManifest matches one manifest's instances against the advisory mirror.
+func (e *Engine) matchManifest(scanID int64, instances []store.Instance, advCache map[string][]store.AffectedAdvisory, exploitCache map[string]bool, res *Result) error {
+	var err error
+	for _, in := range instances {
 		key := in.Ecosystem + "\x00" + in.PackageName
 		advs, ok := advCache[key]
 		if !ok {
 			advs, err = e.Store.AffectedAdvisoriesFor(in.Ecosystem, in.PackageName)
 			if err != nil {
-				return res, err
+				return err
 			}
 			advCache[key] = advs
 		}
@@ -110,7 +166,7 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 			if !seen {
 				exploited, err = e.Store.IsExploited(adv.AdvisoryID)
 				if err != nil {
-					return res, err
+					return err
 				}
 				exploitCache[adv.AdvisoryID] = exploited
 			}
@@ -140,7 +196,7 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 		for _, c := range candidates {
 			delta, err := e.Store.UpsertFinding(scanID, c.finding)
 			if err != nil {
-				return res, err
+				return err
 			}
 			res.Findings++
 			if delta.IsNew {
@@ -152,17 +208,7 @@ func (e *Engine) Run(repoIDs []int64) (Result, error) {
 			res.Events = append(res.Events, eventsFor(in, c.adv, c.finding, delta)...)
 		}
 	}
-
-	resolved, err := e.Store.ResolveStale(scanID)
-	if err != nil {
-		return res, err
-	}
-	res.Resolved = resolved
-	res.RepoCount = len(repos)
-	if err := e.Store.FinishScan(scanID, res.RepoCount, res.Findings); err != nil {
-		return res, err
-	}
-	return res, nil
+	return nil
 }
 
 // eventsFor turns a finding delta into notification events. A newly-exploited
